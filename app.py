@@ -500,14 +500,37 @@ with tab1:
         ).reset_index()
         
         fig_mes = go.Figure()
-        fig_mes.add_trace(go.Bar(x=df_mes['mes_año'], y=df_mes['Flete_Total'], name='Flete (Ingresos)', marker_color='#38bdf8'))
-        fig_mes.add_trace(go.Bar(x=df_mes['mes_año'], y=df_mes['Gastos_Total'], name='Gastos Operativos', marker_color='#f43f5e'))
-        fig_mes.add_trace(go.Scatter(x=df_mes['mes_año'], y=df_mes['Margen_Bruto'], name='Margen Bruto', mode='lines+markers+text',
-                                     text=[f"S/ {v:,.0f}" for v in df_mes['Margen_Bruto']], textposition="top center",
-                                     line=dict(color='#10b981', width=3)))
+        fig_mes.add_trace(go.Bar(
+            x=df_mes['mes_año'], 
+            y=df_mes['Flete_Total'], 
+            name='Flete (Ingresos)', 
+            marker_color='#38bdf8',
+            hovertemplate="<b>%{x}</b><br>💰 Flete: <b>S/ %{y:,.2f}</b><extra></extra>"
+        ))
+        fig_mes.add_trace(go.Bar(
+            x=df_mes['mes_año'], 
+            y=df_mes['Gastos_Total'], 
+            name='Gastos Operativos', 
+            marker_color='#f43f5e',
+            hovertemplate="<b>%{x}</b><br>💸 Gastos: <b>S/ %{y:,.2f}</b><extra></extra>"
+        ))
+        fig_mes.add_trace(go.Scatter(
+            x=df_mes['mes_año'], 
+            y=df_mes['Margen_Bruto'], 
+            name='Margen Bruto', 
+            mode='lines+markers+text',
+            text=[f"S/ {v:,.0f}" for v in df_mes['Margen_Bruto']], 
+            textposition="top center",
+            line=dict(color='#10b981', width=3),
+            hovertemplate="<b>%{x}</b><br>📈 Margen Bruto: <b>S/ %{y:,.2f}</b><extra></extra>"
+        ))
         
         fig_mes.update_layout(
-            barmode='group', template='plotly_dark', height=360, margin=dict(l=10, r=10, t=30, b=10),
+            barmode='group', 
+            template='plotly_dark', 
+            height=380, 
+            margin=dict(l=10, r=10, t=30, b=10),
+            hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_mes, use_container_width=True)
@@ -529,12 +552,36 @@ with tab1:
         ).reset_index()
 
         fig_sem = go.Figure()
-        fig_sem.add_trace(go.Bar(x=df_sem['semana_label'], y=df_sem['Servicios'], name='Cant. Servicios', yaxis='y2', marker_color='#a855f7', opacity=0.75))
-        fig_sem.add_trace(go.Scatter(x=df_sem['semana_label'], y=df_sem['Margen_Bruto'], name='Margen Bruto (S/)', mode='lines+markers', line=dict(color='#10b981', width=3)))
+        
+        # Bar trace for services
+        fig_sem.add_trace(go.Bar(
+            x=df_sem['semana_label'], 
+            y=df_sem['Servicios'], 
+            name='Cant. Servicios', 
+            yaxis='y2', 
+            marker_color='#a855f7', 
+            opacity=0.75,
+            customdata=np.stack((df_sem['Flete_Total'], df_sem['Margen_Bruto']), axis=-1),
+            hovertemplate="<b>%{x}</b><br>📦 Servicios Realizados: <b>%{y} servicios</b><br>💰 Flete Total: <b>S/ %{customdata[0]:,.2f}</b><br>📈 Margen Bruto: <b>S/ %{customdata[1]:,.2f}</b><extra></extra>"
+        ))
+        
+        # Line trace for Margen Bruto
+        fig_sem.add_trace(go.Scatter(
+            x=df_sem['semana_label'], 
+            y=df_sem['Margen_Bruto'], 
+            name='Margen Bruto (S/)', 
+            mode='lines+markers', 
+            line=dict(color='#10b981', width=3),
+            customdata=np.stack((df_sem['Flete_Total'], df_sem['Servicios']), axis=-1),
+            hovertemplate="<b>%{x}</b><br>📈 Margen Bruto: <b>S/ %{y:,.2f}</b><br>💰 Flete Total: <b>S/ %{customdata[0]:,.2f}</b><br>📦 Servicios: <b>%{customdata[1]} servicios</b><extra></extra>"
+        ))
 
         fig_sem.update_layout(
-            template='plotly_dark', height=360, margin=dict(l=10, r=10, t=30, b=10),
-            yaxis=dict(title='Margen Bruto (S/)', showgrid=False),
+            template='plotly_dark', 
+            height=380, 
+            margin=dict(l=10, r=10, t=30, b=10),
+            hovermode="x unified",
+            yaxis=dict(title='Margen Bruto (S/)', showgrid=False, tickprefix="S/ "),
             yaxis2=dict(title='Cant. Servicios', overlaying='y', side='right', showgrid=False),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
@@ -616,6 +663,7 @@ with tab2:
             color_continuous_scale='Blues',
             labels={'Flete_Total': 'Flete Total (S/)', 'cliente': 'Cliente'}
         )
+        fig_cli_flete.update_traces(hovertemplate="<b>%{y}</b><br>💰 Flete: <b>S/ %{x:,.2f}</b><extra></extra>")
         fig_cli_flete.update_layout(template='plotly_dark', height=390, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig_cli_flete, use_container_width=True)
 
@@ -632,6 +680,7 @@ with tab2:
             color_continuous_scale='Greens',
             labels={'Margen_Bruto': 'Margen Bruto (S/)', 'cliente': 'Cliente'}
         )
+        fig_cli_margen.update_traces(hovertemplate="<b>%{y}</b><br>📈 Margen Bruto: <b>S/ %{x:,.2f}</b><extra></extra>")
         fig_cli_margen.update_layout(template='plotly_dark', height=390, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig_cli_margen, use_container_width=True)
 
@@ -689,6 +738,7 @@ with tab3:
             color_continuous_scale='Viridis',
             labels={'Margen_Bruto': 'Margen Bruto (S/)', 'placa': 'Placa'}
         )
+        fig_placa_bar.update_traces(hovertemplate="<b>Placa: %{y}</b><br>📈 Margen Bruto: <b>S/ %{x:,.2f}</b><extra></extra>")
         fig_placa_bar.update_layout(template='plotly_dark', height=390, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig_placa_bar, use_container_width=True)
 
@@ -701,6 +751,7 @@ with tab3:
             hole=0.4,
             color_discrete_sequence=px.colors.qualitative.Pastel
         )
+        fig_placa_pie.update_traces(hovertemplate="<b>Placa: %{label}</b><br>📦 Servicios: <b>%{value}</b> (%{percent})<extra></extra>")
         fig_placa_pie.update_layout(template='plotly_dark', height=390, margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig_placa_pie, use_container_width=True)
 
@@ -745,6 +796,7 @@ with tab4:
             color_continuous_scale='Blues',
             labels={'ruta': 'Ruta', 'Servicios': 'N° de Servicios'}
         )
+        fig_rutas.update_traces(hovertemplate="<b>Ruta: %{y}</b><br>📦 Servicios: <b>%{x}</b><extra></extra>")
         fig_rutas.update_layout(template='plotly_dark', height=340, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig_rutas, use_container_width=True)
 
@@ -787,6 +839,7 @@ with tab4:
             labels={'value': 'Monto (S/)', 'tipo_servicio': 'Tipo de Servicio', 'variable': 'Métrica'},
             color_discrete_sequence=['#38bdf8', '#f43f5e', '#10b981']
         )
+        fig_tipos.update_traces(hovertemplate="<b>%{x} (%{variable})</b><br>Monto: <b>S/ %{y:,.2f}</b><extra></extra>")
         fig_tipos.update_layout(template='plotly_dark', height=340, margin=dict(l=10, r=10, t=20, b=10), legend=dict(title=""))
         st.plotly_chart(fig_tipos, use_container_width=True)
 
