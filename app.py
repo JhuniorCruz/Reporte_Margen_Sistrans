@@ -236,9 +236,10 @@ def detect_excel_file_type(file_source):
         reset_stream(file_source)
         return 'UNKNOWN'
 
-# Automatically discover default local Excel files by content and size
+# Automatically discover default local Excel files by absolute script directory
 def find_default_files():
-    files = [f for f in os.listdir('.') if f.endswith(('.xls', '.xlsx')) and not f.startswith('.')]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    files = [os.path.join(base_dir, f) for f in os.listdir(base_dir) if f.endswith(('.xls', '.xlsx')) and not f.startswith('.')]
     mrg_files = []
     gen_files = []
     for f in files:
@@ -429,8 +430,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# Dynamic File Content Validation & Auto-Detection (Collapsed by Default)
+# File Resolution Logic
 # ---------------------------------------------------------
+default_mrg_file, default_gen_file = find_default_files()
+
 with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Contenido)**", expanded=False):
     ucol1, ucol2 = st.columns(2)
     with ucol1:
@@ -448,52 +451,38 @@ with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Co
             help="Sube el segundo archivo Excel para realizar el cruce completo."
         )
 
-    # Content-based File Assignment
-    detected_mrg = None
-    detected_gen = None
-    uploaded_files = [f for f in [file1, file2] if f is not None]
+# Content-based File Assignment
+detected_mrg = None
+detected_gen = None
+uploaded_files = [f for f in [file1, file2] if f is not None]
 
-    if len(uploaded_files) > 0:
-        for uf in uploaded_files:
-            reset_stream(uf)
-            ftype = detect_excel_file_type(uf)
-            if ftype == 'MARGEN':
-                detected_mrg = uf
-            elif ftype == 'GENERAL':
-                detected_gen = uf
+for uf in uploaded_files:
+    reset_stream(uf)
+    ftype = detect_excel_file_type(uf)
+    if ftype == 'MARGEN':
+        detected_mrg = uf
+    elif ftype == 'GENERAL':
+        detected_gen = uf
 
-    # Dynamically find default files in directory if not uploaded
-    default_mrg_file, default_gen_file = find_default_files()
+final_mrg_source = detected_mrg if detected_mrg is not None else default_mrg_file
+final_gen_source = detected_gen if detected_gen is not None else default_gen_file
 
-    final_mrg_source = detected_mrg if detected_mrg is not None else default_mrg_file
-    final_gen_source = detected_gen if detected_gen is not None else default_gen_file
+if final_mrg_source is None or final_gen_source is None:
+    st.error("⚠️ No se pudieron encontrar ambos reportes requeridos. Por favor despliega la pestaña de arriba y sube los 2 archivos Excel válidos (Reporte de Margen y Listado General).")
+    st.stop()
 
-    # Status notifications for auto-detection
-    if final_mrg_source is None or final_gen_source is None:
-        st.error("⚠️ No se pudieron identificar ambos reportes requeridos. Por favor suba los 2 archivos Excel válidos (Reporte de Margen y Listado General).")
-        st.stop()
+# Load Data
+reset_stream(final_mrg_source)
+reset_stream(final_gen_source)
+df_all = process_excel_files(final_mrg_source, final_gen_source)
 
-    if detected_mrg is not None and detected_gen is not None:
-        st.success(f"✅ **Detección automática exitosa por contenido**: Se identificó **'{detected_mrg.name}'** como Reporte de Margen y **'{detected_gen.name}'** como Listado General.")
-    elif len(uploaded_files) == 1:
-        uploaded_name = uploaded_files[0].name
-        role_found = "Reporte de Margen" if detected_mrg is not None else "Listado General"
-        st.info(f"ℹ️ Archivo subido **'{uploaded_name}'** identificado como **{role_found}**. Se usa el archivo local predeterminado para el reporte restante.")
-    else:
-        mrg_name = os.path.basename(str(final_mrg_source))
-        gen_name = os.path.basename(str(final_gen_source))
-        st.info(f"ℹ️ **Cargando datos locales detectados**: `{mrg_name}` y `{gen_name}`. Puedes desplegar esta pestaña si deseas subir nuevos archivos.")
+min_date = df_all['fecha_salida'].min().date()
+max_date = df_all['fecha_salida'].max().date()
 
-    st.markdown("---")
-    
+# Controls bar
+with st.container():
     gcol1, gcol2 = st.columns([2, 2])
     with gcol1:
-        reset_stream(final_mrg_source)
-        reset_stream(final_gen_source)
-        df_all = process_excel_files(final_mrg_source, final_gen_source)
-        min_date = df_all['fecha_salida'].min().date()
-        max_date = df_all['fecha_salida'].max().date()
-        
         start_date, end_date = st.date_input(
             "📅 Rango de Fechas Global",
             value=[min_date, max_date],
@@ -507,23 +496,6 @@ with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Co
             horizontal=True,
             help="El Flete Liquidado muestra el ingreso cobrado real. El Flete Inicial muestra el registro operativo preliminar."
         )
-
-# Fallback load outside expander if expander is collapsed
-default_mrg_file, default_gen_file = find_default_files()
-final_mrg_source = detected_mrg if 'detected_mrg' in locals() and detected_mrg is not None else default_mrg_file
-final_gen_source = detected_gen if 'detected_gen' in locals() and detected_gen is not None else default_gen_file
-
-reset_stream(final_mrg_source)
-reset_stream(final_gen_source)
-df_all = process_excel_files(final_mrg_source, final_gen_source)
-
-min_date = df_all['fecha_salida'].min().date()
-max_date = df_all['fecha_salida'].max().date()
-
-if 'start_date' not in locals():
-    start_date, end_date = min_date, max_date
-if 'flete_source' not in locals():
-    flete_source = "Flete Liquidado (Reporte Margen)"
 
 # Global Filter Mask
 df = df_all[
