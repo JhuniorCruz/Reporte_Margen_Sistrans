@@ -164,105 +164,243 @@ DIAS_ES = {
     'Thursday': 'Jueves', 'Friday': 'Viernes', 'Saturday': 'Sábado', 'Sunday': 'Domingo'
 }
 
+# Helper to reset file buffer stream pointers
+def reset_stream(file_source):
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+
+# Helper to load and parse any Sistrans Excel layout (12-column or 15-column exports)
+def load_sistrans_file(file_source):
+    reset_stream(file_source)
+    df_raw = pd.read_excel(file_source, header=None)
+    reset_stream(file_source)
+    
+    # Locate header row containing PLACA or RUTA or GASTOS or CHOFER
+    h_idx = 7
+    for idx, row in df_raw.iloc[:15].iterrows():
+        row_str = ' '.join(row.fillna('').astype(str).values).upper()
+        if 'PLACA' in row_str or 'GASTOS' in row_str or 'CHOFER' in row_str:
+            h_idx = idx
+            break
+            
+    row1 = df_raw.iloc[h_idx].fillna('').astype(str).str.strip()
+    row2 = df_raw.iloc[h_idx+1].fillna('').astype(str).str.strip() if h_idx+1 < len(df_raw) else ['']*len(row1)
+    
+    col_names = []
+    for idx_c, (h1, h2) in enumerate(zip(row1, row2)):
+        name = f'{h1} {h2}'.strip().upper()
+        name = ' '.join(name.split())
+        if not name:
+            name = f'UNNAMED_{idx_c}'
+        col_names.append(name)
+        
+    ser_col_idx = 0
+    for c in range(min(5, len(col_names))):
+        vals = pd.to_numeric(df_raw[c], errors='coerce')
+        if (vals > 1000).sum() >= 3:
+            ser_col_idx = c
+            break
+            
+    ser_vals = pd.to_numeric(df_raw[ser_col_idx], errors='coerce')
+    df_data = df_raw[ser_vals > 1000].copy()
+    df_data.columns = col_names
+    return df_data
+
 # ---------------------------------------------------------
-# Dynamic Data Loader (Supports File Uploader & Default Files)
+# File Type Auto-Detector Function (Validates Content, NOT Filename)
+# ---------------------------------------------------------
+def detect_excel_file_type(file_source):
+    try:
+        reset_stream(file_source)
+        df_sample = pd.read_excel(file_source, header=None, nrows=25)
+        reset_stream(file_source)
+        
+        text_content = " ".join(df_sample.astype(str).values.flatten()).upper()
+        
+        has_chofer = "CHOFER" in text_content
+        has_cliente = "CLIENTE" in text_content
+        has_producto = "PRODUCTO" in text_content
+        has_gastos = "GASTOS" in text_content
+        has_margen = "MARGEN" in text_content
+        has_retorno = "RETORNO" in text_content
+        
+        if (has_chofer or has_cliente or has_producto) and not (has_gastos or has_margen or has_retorno):
+            return 'GENERAL'
+        elif has_gastos or has_margen or has_retorno:
+            return 'MARGEN'
+        elif has_chofer or has_cliente:
+            return 'GENERAL'
+        else:
+            return 'UNKNOWN'
+    except Exception:
+        reset_stream(file_source)
+        return 'UNKNOWN'
+
+# Automatically discover default local Excel files by content and size
+def find_default_files():
+    files = [f for f in os.listdir('.') if f.endswith(('.xls', '.xlsx')) and not f.startswith('.')]
+    mrg_files = []
+    gen_files = []
+    for f in files:
+        ftype = detect_excel_file_type(f)
+        if ftype == 'MARGEN':
+            mrg_files.append(f)
+        elif ftype == 'GENERAL':
+            gen_files.append(f)
+            
+    mrg_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
+    gen_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
+    
+    mrg_default = mrg_files[0] if mrg_files else None
+    gen_default = gen_files[0] if gen_files else None
+    return mrg_default, gen_default
+
+# ---------------------------------------------------------
+# Dynamic Data Loader (Unbundles Each Service Leg by Its Real Departure Date)
 # ---------------------------------------------------------
 @st.cache_data
 def process_excel_files(file_mrg_source, file_gen_source):
     # 1. Load Margen File (Financial base)
-    df_mrg_raw = pd.read_excel(file_mrg_source, header=None)
+    df_mrg_raw = load_sistrans_file(file_mrg_source)
     
-    header_idx_mrg = 11
-    for idx, row in df_mrg_raw.iloc[:20].iterrows():
-        if any('Servicio' in str(val) for val in row.values):
-            header_idx_mrg = idx
-            break
-            
-    df_mrg = df_mrg_raw.iloc[header_idx_mrg+4 if header_idx_mrg == 7 else 11:].copy()
-    df_mrg = df_mrg[pd.to_numeric(df_mrg[0], errors='coerce').notnull()].copy()
-    
-    mrg_cols = ['servicio_ida', 'fecha_salida', 'tipo_servicio', 'ruta', 'placa', 'operador', 
-                'servicio_retorno', 'flete_ida', 'flete_retorno', 'gastos_ida', 'gastos_retorno', 'margen_bruto']
-    df_mrg = df_mrg.iloc[:, :12]
-    df_mrg.columns = mrg_cols
+    df_mrg = pd.DataFrame()
+    for col in df_mrg_raw.columns:
+        c_upper = col.upper()
+        if 'SERVICIO IDA' in c_upper or 'NO. SERVICIO' in c_upper:
+            df_mrg['servicio_ida'] = df_mrg_raw[col]
+        elif 'FECHA SALIDA' in c_upper or ('FECHA' in c_upper and 'fecha_ida' not in df_mrg.columns):
+            df_mrg['fecha_ida'] = df_mrg_raw[col]
+        elif 'TIPO SERVICIO' in c_upper:
+            df_mrg['tipo_servicio'] = df_mrg_raw[col]
+        elif 'RUTA' in c_upper:
+            df_mrg['ruta'] = df_mrg_raw[col]
+        elif 'PLACA' in c_upper:
+            df_mrg['placa'] = df_mrg_raw[col]
+        elif 'OPERADOR' in c_upper:
+            df_mrg['operador'] = df_mrg_raw[col]
+        elif 'SERVICIO RETORNO' in c_upper:
+            df_mrg['servicio_retorno'] = df_mrg_raw[col]
+        elif 'FLETE IDA' in c_upper:
+            df_mrg['flete_ida'] = df_mrg_raw[col]
+        elif 'FLETE RETORNO' in c_upper:
+            df_mrg['flete_retorno'] = df_mrg_raw[col]
+        elif 'GASTOS IDA' in c_upper:
+            df_mrg['gastos_ida'] = df_mrg_raw[col]
+        elif 'GASTOS RETORNO' in c_upper:
+            df_mrg['gastos_retorno'] = df_mrg_raw[col]
+        elif 'MARGEN BRUTO' in c_upper or 'MARGEN' in c_upper:
+            df_mrg['margen_bruto'] = df_mrg_raw[col]
 
     df_mrg['servicio_ida'] = pd.to_numeric(df_mrg['servicio_ida'], errors='coerce')
     df_mrg['servicio_retorno'] = pd.to_numeric(df_mrg['servicio_retorno'], errors='coerce').fillna(0)
-    df_mrg['fecha_salida'] = pd.to_datetime(df_mrg['fecha_salida'], errors='coerce')
+    df_mrg['fecha_ida'] = pd.to_datetime(df_mrg['fecha_ida'], errors='coerce')
 
     num_cols = ['flete_ida', 'flete_retorno', 'gastos_ida', 'gastos_retorno', 'margen_bruto']
     for col in num_cols:
-        df_mrg[col] = pd.to_numeric(df_mrg[col], errors='coerce').fillna(0)
+        if col in df_mrg.columns:
+            df_mrg[col] = pd.to_numeric(df_mrg[col], errors='coerce').fillna(0)
+        else:
+            df_mrg[col] = 0.0
 
-    # 2. Load General File for Client & Driver Cross-Reference
-    df_gen_raw = pd.read_excel(file_gen_source, header=None)
-    header_idx_gen = 11
-    for idx, row in df_gen_raw.iloc[:20].iterrows():
-        if any('Chofer' in str(val) or 'Cliente' in str(val) for val in row.values):
-            header_idx_gen = idx
-            break
-            
-    df_gen = df_gen_raw.iloc[header_idx_gen+4 if header_idx_gen == 7 else 11:].copy()
-    df_gen = df_gen[pd.to_numeric(df_gen[0], errors='coerce').notnull()].copy()
+    # 2. Load General File for Client, Driver, and Real Departure Date
+    df_gen_raw = load_sistrans_file(file_gen_source)
     
-    gen_cols = ['id_servicio', 'fecha_salida', 'oficina', 'tipo_servicio', 'ruta', 'placa', 
-                'operador', 'chofer', 'cliente', 'producto', 'fecha_fin', 'estado', 'flete_gen', 'obs']
-    df_gen = df_gen.iloc[:, :14]
-    df_gen.columns = gen_cols
+    df_gen = pd.DataFrame()
+    for col in df_gen_raw.columns:
+        c_upper = col.upper()
+        if 'NO. SERVICIO' in c_upper or 'SERVICIO IDA' in c_upper:
+            df_gen['id_servicio'] = df_gen_raw[col]
+        elif 'FECHA SALIDA' in c_upper or ('FECHA' in c_upper and 'fecha_gen' not in df_gen.columns):
+            df_gen['fecha_gen'] = df_gen_raw[col]
+        elif 'OFICINA' in c_upper:
+            df_gen['oficina'] = df_gen_raw[col]
+        elif 'TIPO SERVICIO' in c_upper:
+            df_gen['tipo_servicio'] = df_gen_raw[col]
+        elif 'RUTA' in c_upper:
+            df_gen['ruta'] = df_gen_raw[col]
+        elif 'PLACA' in c_upper:
+            df_gen['placa'] = df_gen_raw[col]
+        elif 'OPERADOR' in c_upper:
+            df_gen['operador'] = df_gen_raw[col]
+        elif 'CHOFER' in c_upper:
+            df_gen['chofer'] = df_gen_raw[col]
+        elif 'CLIENTE' in c_upper:
+            df_gen['cliente'] = df_gen_raw[col]
+        elif 'PRODUCTO' in c_upper:
+            df_gen['producto'] = df_gen_raw[col]
+        elif 'FECHA FIN' in c_upper:
+            df_gen['fecha_fin'] = df_gen_raw[col]
+        elif 'ESTADO' in c_upper:
+            df_gen['estado'] = df_gen_raw[col]
+        elif 'IMPORTE FLETE' in c_upper or 'FLETE' in c_upper:
+            df_gen['flete_gen'] = df_gen_raw[col]
+        elif 'OBS' in c_upper:
+            df_gen['obs'] = df_gen_raw[col]
+
     df_gen['id_servicio'] = pd.to_numeric(df_gen['id_servicio'], errors='coerce')
     df_gen = df_gen.dropna(subset=['id_servicio'])
+    df_gen['fecha_gen'] = pd.to_datetime(df_gen['fecha_gen'], errors='coerce')
     df_gen['flete_gen'] = pd.to_numeric(df_gen['flete_gen'], errors='coerce').fillna(0)
 
     df_gen['cliente'] = df_gen['cliente'].astype(str).str.strip().str.upper()
     df_gen['chofer'] = df_gen['chofer'].astype(str).str.strip().str.upper()
 
-    # Merge IDA client, driver and original flete
-    df = pd.merge(df_mrg, df_gen[['id_servicio', 'cliente', 'chofer', 'producto', 'estado', 'flete_gen']], 
-                  left_on='servicio_ida', right_on='id_servicio', how='left')
-    df.rename(columns={
-        'cliente': 'cliente_ida', 
-        'chofer': 'chofer_ida', 
-        'producto': 'producto_ida',
-        'flete_gen': 'flete_gen_ida'
-    }, inplace=True)
+    # 3. Unroll IDA and RETORNO legs to count each service by its REAL departure date!
+    leg_ida = df_mrg[['servicio_ida', 'fecha_ida', 'tipo_servicio', 'ruta', 'placa', 'operador', 
+                       'flete_ida', 'gastos_ida']].copy()
+    leg_ida.columns = ['id_servicio', 'fecha_mrg', 'tipo_servicio', 'ruta', 'placa', 'operador', 
+                       'flete_mrg', 'gastos_total']
+    leg_ida['tramo'] = 'IDA'
 
-    # Merge RETORNO client and original flete
-    df = pd.merge(df, df_gen[['id_servicio', 'cliente', 'flete_gen']], 
-                  left_on='servicio_retorno', right_on='id_servicio', how='left')
-    df.rename(columns={
-        'cliente': 'cliente_retorno',
-        'flete_gen': 'flete_gen_retorno'
-    }, inplace=True)
+    leg_ret = df_mrg[df_mrg['servicio_retorno'] > 0][['servicio_retorno', 'fecha_ida', 'tipo_servicio', 'ruta', 'placa', 'operador', 
+                                                       'flete_retorno', 'gastos_retorno']].copy()
+    leg_ret.columns = ['id_servicio', 'fecha_mrg', 'tipo_servicio', 'ruta', 'placa', 'operador', 
+                       'flete_mrg', 'gastos_total']
+    leg_ret['tramo'] = 'RETORNO'
 
-    df['cliente_ida'] = df['cliente_ida'].fillna('SIN CLIENTE')
-    df['cliente_retorno'] = df['cliente_retorno'].fillna('SIN CLIENTE')
-    df['flete_gen_ida'] = df['flete_gen_ida'].fillna(0)
-    df['flete_gen_retorno'] = df['flete_gen_retorno'].fillna(0)
+    df_services = pd.concat([leg_ida, leg_ret], ignore_index=True)
+
+    # Merge operational details from General file by id_servicio
+    df_services = pd.merge(df_services, df_gen[['id_servicio', 'fecha_gen', 'cliente', 'chofer', 'producto', 'estado', 'flete_gen']], 
+                           on='id_servicio', how='left')
+
+    # Effective departure date: prefer real operational date from General list, fallback to Margen date
+    df_services['fecha_salida'] = df_services['fecha_gen'].fillna(pd.to_datetime(df_services['fecha_mrg']))
+    df_services['cliente'] = df_services['cliente'].fillna('SIN CLIENTE')
+    df_services['chofer'] = df_services['chofer'].fillna('SIN CHOFER')
+
+    df_services['cliente_ida'] = df_services['cliente']
+    df_services['cliente_retorno'] = np.where(df_services['tramo'] == 'RETORNO', df_services['cliente'], 'N/A')
+    df_services['chofer_ida'] = df_services['chofer']
+    df_services['servicio_ida'] = df_services['id_servicio']
+    df_services['servicio_retorno'] = np.where(df_services['tramo'] == 'RETORNO', df_services['id_servicio'], 0)
+    df_services['flete_ida'] = np.where(df_services['tramo'] == 'IDA', df_services['flete_mrg'], 0)
+    df_services['flete_retorno'] = np.where(df_services['tramo'] == 'RETORNO', df_services['flete_mrg'], 0)
+    df_services['gastos_ida'] = np.where(df_services['tramo'] == 'IDA', df_services['gastos_total'], 0)
+    df_services['gastos_retorno'] = np.where(df_services['tramo'] == 'RETORNO', df_services['gastos_total'], 0)
+
+    df_services['flete_total'] = df_services['flete_mrg']
+    df_services['flete_gen_total'] = df_services['flete_gen']
+    df_services['margen_calculado'] = df_services['flete_total'] - df_services['gastos_total']
+    df_services['pct_margen'] = np.where(df_services['flete_total'] > 0, (df_services['margen_calculado'] / df_services['flete_total']) * 100, 0)
+    df_services['cant_servicios'] = 1
 
     # Clean text columns
-    df['tipo_servicio'] = df['tipo_servicio'].astype(str).str.strip().str.upper()
-    df['ruta'] = df['ruta'].astype(str).str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
-    df['placa'] = df['placa'].astype(str).str.strip().str.upper()
-    df['operador'] = df['operador'].astype(str).str.strip().str.upper()
-
-    # Calculated metrics
-    df['flete_total'] = df['flete_ida'] + df['flete_retorno']
-    df['flete_gen_total'] = df['flete_gen_ida'] + df['flete_gen_retorno']
-    df['gastos_total'] = df['gastos_ida'] + df['gastos_retorno']
-    df['margen_calculado'] = df['flete_total'] - df['gastos_total']
-    df['pct_margen'] = np.where(df['flete_total'] > 0, (df['margen_calculado'] / df['flete_total']) * 100, 0)
-    df['tipo_viaje'] = np.where(df['servicio_retorno'] > 0, 'Ida y Vuelta', 'Solo Ida')
+    df_services['tipo_servicio'] = df_services['tipo_servicio'].astype(str).str.strip().str.upper()
+    df_services['ruta'] = df_services['ruta'].astype(str).str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
+    df_services['placa'] = df_services['placa'].astype(str).str.strip().str.upper()
+    df_services['operador'] = df_services['operador'].astype(str).str.strip().str.upper()
 
     # Spanish dates and weeks formatting
-    df['mes_num'] = df['fecha_salida'].dt.month
-    df['mes_nombre'] = df['fecha_salida'].dt.month.map(MESES_ES)
-    df['mes_año'] = df['fecha_salida'].apply(lambda d: f"{MESES_ES[d.month]} {d.year}" if pd.notnull(d) else "N/A")
-    df['dia_semana'] = df['fecha_salida'].dt.day_name().map(DIAS_ES)
+    df_services['mes_num'] = df_services['fecha_salida'].dt.month
+    df_services['mes_nombre'] = df_services['fecha_salida'].dt.month.map(MESES_ES)
+    df_services['mes_año'] = df_services['fecha_salida'].apply(lambda d: f"{MESES_ES[d.month]} {d.year}" if pd.notnull(d) else "N/A")
+    df_services['dia_semana'] = df_services['fecha_salida'].dt.day_name().map(DIAS_ES)
 
     # ISO Week with friendly Spanish date range
-    df['semana_num'] = df['fecha_salida'].dt.isocalendar().week
-    df['semana_inicio'] = df['fecha_salida'].apply(lambda d: d - pd.Timedelta(days=d.weekday()) if pd.notnull(d) else d)
-    df['semana_fin'] = df['semana_inicio'] + pd.Timedelta(days=6)
+    df_services['semana_num'] = df_services['fecha_salida'].dt.isocalendar().week
+    df_services['semana_inicio'] = df_services['fecha_salida'].apply(lambda d: d - pd.Timedelta(days=d.weekday()) if pd.notnull(d) else d)
+    df_services['semana_fin'] = df_services['semana_inicio'] + pd.Timedelta(days=6)
 
     def make_week_label(r):
         if pd.isnull(r['fecha_salida']):
@@ -274,9 +412,9 @@ def process_excel_files(file_mrg_source, file_gen_source):
         fin_m = MESES_ABR_ES[r['semana_fin'].month]
         return f"Semana {sem:02d} ({ini_d:02d} {ini_m} - {fin_d:02d} {fin_m})"
 
-    df['semana_label'] = df.apply(make_week_label, axis=1)
+    df_services['semana_label'] = df_services.apply(make_week_label, axis=1)
 
-    return df
+    return df_services
 
 # ---------------------------------------------------------
 # Top Main Header
@@ -291,49 +429,68 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# File Uploader & Global Date Controls (Top Expander)
+# Dynamic File Content Validation & Auto-Detection (Collapsed by Default)
 # ---------------------------------------------------------
-with st.expander("📂 **Cargar Archivos de Datos (Excel) y Filtros Globales**", expanded=True):
+with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Contenido)**", expanded=False):
     ucol1, ucol2 = st.columns(2)
     with ucol1:
-        uploaded_mrg = st.file_uploader(
-            "1. Subir Reporte de Margen (`rptlistadoserviciosmargen.xls`)", 
+        file1 = st.file_uploader(
+            "📄 Subir Archivo 1 (Cualquier Nombre Excel)", 
             type=["xls", "xlsx"],
-            key="u_mrg",
-            help="Suba el archivo con fletes cobrados y gastos de ida y retorno."
+            key="u_file1",
+            help="Sube el archivo Excel. El sistema identificará automáticamente si es el Reporte de Margen o el Listado General."
         )
     with ucol2:
-        uploaded_gen = st.file_uploader(
-            "2. Subir Listado General (`rptlistadoservicios_general.xls`)", 
+        file2 = st.file_uploader(
+            "📄 Subir Archivo 2 (Cualquier Nombre Excel)", 
             type=["xls", "xlsx"],
-            key="u_gen",
-            help="Suba el archivo operativo con clientes, choferes y productos."
+            key="u_file2",
+            help="Sube el segundo archivo Excel para realizar el cruce completo."
         )
 
-    # Determine files to load (Uploaded file OR fallback to local default file)
-    mrg_source = uploaded_mrg if uploaded_mrg is not None else 'rptlistadoserviciosmargen.xls'
-    gen_source = uploaded_gen if uploaded_gen is not None else 'rptlistadoservicios_general.xls'
+    # Content-based File Assignment
+    detected_mrg = None
+    detected_gen = None
+    uploaded_files = [f for f in [file1, file2] if f is not None]
 
-    # Verify if fallback files exist if not uploaded
-    has_mrg = (uploaded_mrg is not None) or os.path.exists('rptlistadoserviciosmargen.xls')
-    has_gen = (uploaded_gen is not None) or os.path.exists('rptlistadoservicios_general.xls')
+    if len(uploaded_files) > 0:
+        for uf in uploaded_files:
+            reset_stream(uf)
+            ftype = detect_excel_file_type(uf)
+            if ftype == 'MARGEN':
+                detected_mrg = uf
+            elif ftype == 'GENERAL':
+                detected_gen = uf
 
-    if not has_mrg or not has_gen:
-        st.error("⚠️ Faltan archivos de datos. Por favor suba ambos archivos Excel para generar el dashboard.")
+    # Dynamically find default files in directory if not uploaded
+    default_mrg_file, default_gen_file = find_default_files()
+
+    final_mrg_source = detected_mrg if detected_mrg is not None else default_mrg_file
+    final_gen_source = detected_gen if detected_gen is not None else default_gen_file
+
+    # Status notifications for auto-detection
+    if final_mrg_source is None or final_gen_source is None:
+        st.error("⚠️ No se pudieron identificar ambos reportes requeridos. Por favor suba los 2 archivos Excel válidos (Reporte de Margen y Listado General).")
         st.stop()
 
-    if uploaded_mrg is not None and uploaded_gen is not None:
-        st.success("✅ **Archivos subidos por el usuario procesados correctamente.**")
-    elif uploaded_mrg is not None or uploaded_gen is not None:
-        st.info("ℹ️ Se ha subido 1 archivo nuevo. Se usará el archivo local predeterminado para completar el cruce.")
+    if detected_mrg is not None and detected_gen is not None:
+        st.success(f"✅ **Detección automática exitosa por contenido**: Se identificó **'{detected_mrg.name}'** como Reporte de Margen y **'{detected_gen.name}'** como Listado General.")
+    elif len(uploaded_files) == 1:
+        uploaded_name = uploaded_files[0].name
+        role_found = "Reporte de Margen" if detected_mrg is not None else "Listado General"
+        st.info(f"ℹ️ Archivo subido **'{uploaded_name}'** identificado como **{role_found}**. Se usa el archivo local predeterminado para el reporte restante.")
     else:
-        st.info("ℹ️ **Usando datos locales base** (`rptlistadoserviciosmargen.xls` y `rptlistadoservicios_general.xls`). Puedes subir nuevos reportes arriba.")
+        mrg_name = os.path.basename(str(final_mrg_source))
+        gen_name = os.path.basename(str(final_gen_source))
+        st.info(f"ℹ️ **Cargando datos locales detectados**: `{mrg_name}` y `{gen_name}`. Puedes desplegar esta pestaña si deseas subir nuevos archivos.")
 
     st.markdown("---")
     
     gcol1, gcol2 = st.columns([2, 2])
     with gcol1:
-        df_all = process_excel_files(mrg_source, gen_source)
+        reset_stream(final_mrg_source)
+        reset_stream(final_gen_source)
+        df_all = process_excel_files(final_mrg_source, final_gen_source)
         min_date = df_all['fecha_salida'].min().date()
         max_date = df_all['fecha_salida'].max().date()
         
@@ -350,6 +507,23 @@ with st.expander("📂 **Cargar Archivos de Datos (Excel) y Filtros Globales**",
             horizontal=True,
             help="El Flete Liquidado muestra el ingreso cobrado real. El Flete Inicial muestra el registro operativo preliminar."
         )
+
+# Fallback load outside expander if expander is collapsed
+default_mrg_file, default_gen_file = find_default_files()
+final_mrg_source = detected_mrg if 'detected_mrg' in locals() and detected_mrg is not None else default_mrg_file
+final_gen_source = detected_gen if 'detected_gen' in locals() and detected_gen is not None else default_gen_file
+
+reset_stream(final_mrg_source)
+reset_stream(final_gen_source)
+df_all = process_excel_files(final_mrg_source, final_gen_source)
+
+min_date = df_all['fecha_salida'].min().date()
+max_date = df_all['fecha_salida'].max().date()
+
+if 'start_date' not in locals():
+    start_date, end_date = min_date, max_date
+if 'flete_source' not in locals():
+    flete_source = "Flete Liquidado (Reporte Margen)"
 
 # Global Filter Mask
 df = df_all[
@@ -407,9 +581,9 @@ with c4:
 with c5:
     st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-title">📦 Total Viajes</div>
+            <div class="metric-title">📦 Total Servicios</div>
             <div class="metric-value" style="color: #a855f7;">{total_servicios}</div>
-            <div class="metric-sub">Servicios Ejecutados</div>
+            <div class="metric-sub">Servicios Reales Ejecutados</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -445,7 +619,7 @@ with tab1:
             Flete_Total=('flete_total', 'sum'),
             Gastos_Total=('gastos_total', 'sum'),
             Margen_Bruto=('margen_calculado', 'sum'),
-            Servicios=('servicio_ida', 'count')
+            Servicios=('cant_servicios', 'sum')
         ).reset_index()
         
         fig_mes = go.Figure()
@@ -472,7 +646,7 @@ with tab1:
         df_sem_filtered = df[df['semana_label'].isin(sel_semanas)]
         
         df_sem = df_sem_filtered.groupby(['semana_num', 'semana_label'], sort=True).agg(
-            Servicios=('servicio_ida', 'count'),
+            Servicios=('cant_servicios', 'sum'),
             Margen_Bruto=('margen_calculado', 'sum'),
             Flete_Total=('flete_total', 'sum')
         ).reset_index()
@@ -498,7 +672,7 @@ with tab1:
         
         wc1, wc2, wc3, wc4 = st.columns(4)
         wc1.metric("Semana Activa", latest_week_label)
-        wc2.metric("Servicios Realizados", f"{len(df_curr_week)} viajes")
+        wc2.metric("Servicios Realizados", f"{len(df_curr_week)} servicios")
         wc3.metric("Flete esta Semana", f"S/ {df_curr_week['flete_total'].sum():,.2f}")
         wc4.metric("Margen esta Semana", f"S/ {df_curr_week['margen_calculado'].sum():,.2f}")
 
@@ -508,18 +682,8 @@ with tab1:
 with tab2:
     use_liquidado = (flete_source == "Flete Liquidado (Reporte Margen)")
 
-    leg_ida = df[['servicio_ida', 'fecha_salida', 'placa', 'ruta', 'tipo_servicio', 'cliente_ida', 'flete_ida', 'flete_gen_ida', 'gastos_ida']].copy()
-    leg_ida.columns = ['id_servicio', 'fecha_salida', 'placa', 'ruta', 'tipo_servicio', 'cliente', 'flete_mrg', 'flete_gen', 'gastos']
-    leg_ida['flete_usado'] = leg_ida['flete_mrg'] if use_liquidado else leg_ida['flete_gen']
-    leg_ida['margen'] = leg_ida['flete_mrg'] - leg_ida['gastos']
-
-    leg_ret = df[df['servicio_retorno'] > 0][['servicio_retorno', 'fecha_salida', 'placa', 'ruta', 'tipo_servicio', 'cliente_retorno', 'flete_retorno', 'flete_gen_retorno', 'gastos_retorno']].copy()
-    leg_ret.columns = ['id_servicio', 'fecha_salida', 'placa', 'ruta', 'tipo_servicio', 'cliente', 'flete_mrg', 'flete_gen', 'gastos']
-    leg_ret['flete_usado'] = leg_ret['flete_mrg'] if use_liquidado else leg_ret['flete_gen']
-    leg_ret['margen'] = leg_ret['flete_mrg'] - leg_ret['gastos']
-
-    all_legs = pd.concat([leg_ida, leg_ret], ignore_index=True)
-    all_legs = all_legs[all_legs['cliente'] != 'SIN CLIENTE']
+    all_legs = df.copy()
+    all_legs['flete_usado'] = all_legs['flete_total'] if use_liquidado else all_legs['flete_gen_total']
 
     st.markdown('<div class="filter-bar-title">👥 Controles Directos para Análisis de Clientes</div>', unsafe_allow_html=True)
     fc1, fc2 = st.columns([3, 1])
@@ -534,10 +698,10 @@ with tab2:
     df_cli = all_legs_filtered.groupby('cliente').agg(
         Servicios=('id_servicio', 'count'),
         Flete_Total=('flete_usado', 'sum'),
-        Flete_Liquidado=('flete_mrg', 'sum'),
-        Flete_Registrado_General=('flete_gen', 'sum'),
-        Gastos_Total=('gastos', 'sum'),
-        Margen_Bruto=('margen', 'sum'),
+        Flete_Liquidado=('flete_total', 'sum'),
+        Flete_Registrado_General=('flete_gen_total', 'sum'),
+        Gastos_Total=('gastos_total', 'sum'),
+        Margen_Bruto=('margen_calculado', 'sum'),
         Flete_Promedio=('flete_usado', 'mean')
     ).reset_index()
 
@@ -622,7 +786,7 @@ with tab3:
     df_p_filtered = df[df['placa'].isin(sel_tab3_placas)].copy()
 
     df_placas = df_p_filtered.groupby('placa').agg(
-        Servicios=('servicio_ida', 'count'),
+        Servicios=('cant_servicios', 'sum'),
         Flete_Total=('flete_total', 'sum'),
         Gastos_Total=('gastos_total', 'sum'),
         Margen_Bruto=('margen_calculado', 'sum'),
@@ -652,7 +816,7 @@ with tab3:
         st.plotly_chart(fig_placa_bar, use_container_width=True)
 
     with col_p2:
-        st.markdown("#### 📊 Participación en Cantidad de Viajes")
+        st.markdown("#### 📊 Participación en Cantidad de Servicios")
         fig_placa_pie = px.pie(
             df_placas.head(limit_p),
             names='placa',
@@ -690,7 +854,7 @@ with tab4:
         df_r_filtered = df[df['ruta'].isin(sel_rutas)]
         
         df_rutas = df_r_filtered.groupby('ruta').agg(
-            Servicios=('servicio_ida', 'count'),
+            Servicios=('cant_servicios', 'sum'),
             Margen_Bruto=('margen_calculado', 'sum')
         ).reset_index().sort_values('Servicios', ascending=False).head(10)
 
@@ -712,11 +876,11 @@ with tab4:
         r_gastos = df_r_filtered['gastos_total'].sum()
         r_margen = df_r_filtered['margen_calculado'].sum()
         r_pct = (r_margen / r_flete * 100) if r_flete > 0 else 0
-        r_serv = len(df_r_filtered)
+        r_serv = int(df_r_filtered['cant_servicios'].sum())
 
         st.markdown(f"""
             <div class="summary-chip-container">
-                <div class="chip chip-purple">📦 <b>{r_serv}</b> viajes</div>
+                <div class="chip chip-purple">📦 <b>{r_serv}</b> servicios</div>
                 <div class="chip chip-blue">💰 Flete: <b>S/ {r_flete:,.2f}</b></div>
                 <div class="chip chip-red">💸 Gastos: <b>S/ {r_gastos:,.2f}</b></div>
                 <div class="chip chip-green">📈 Margen: <b>S/ {r_margen:,.2f}</b> ({r_pct:.1f}%)</div>
@@ -732,7 +896,7 @@ with tab4:
         df_t_filtered = df[df['tipo_servicio'].isin(sel_tipos)]
 
         df_tipos = df_t_filtered.groupby('tipo_servicio').agg(
-            Servicios=('servicio_ida', 'count'),
+            Servicios=('cant_servicios', 'sum'),
             Flete_Total=('flete_total', 'sum'),
             Gastos_Total=('gastos_total', 'sum'),
             Margen_Bruto=('margen_calculado', 'sum')
@@ -754,11 +918,11 @@ with tab4:
         t_gastos = df_t_filtered['gastos_total'].sum()
         t_margen = df_t_filtered['margen_calculado'].sum()
         t_pct = (t_margen / t_flete * 100) if t_flete > 0 else 0
-        t_serv = len(df_t_filtered)
+        t_serv = int(df_t_filtered['cant_servicios'].sum())
 
         st.markdown(f"""
             <div class="summary-chip-container">
-                <div class="chip chip-purple">📦 <b>{t_serv}</b> viajes</div>
+                <div class="chip chip-purple">📦 <b>{t_serv}</b> servicios</div>
                 <div class="chip chip-blue">💰 Flete Total: <b>S/ {t_flete:,.2f}</b></div>
                 <div class="chip chip-red">💸 Gastos: <b>S/ {t_gastos:,.2f}</b></div>
                 <div class="chip chip-green">📈 Margen: <b>S/ {t_margen:,.2f}</b> ({t_pct:.1f}%)</div>
@@ -768,7 +932,7 @@ with tab4:
     st.markdown("---")
     st.markdown("#### 🏢 Operadores de Flota (Propios vs Tercerizados)")
     df_oper = df.groupby('operador').agg(
-        Servicios=('servicio_ida', 'count'),
+        Servicios=('cant_servicios', 'sum'),
         Flete_Total=('flete_total', 'sum'),
         Gastos_Total=('gastos_total', 'sum'),
         Margen_Bruto=('margen_calculado', 'sum')
@@ -801,27 +965,20 @@ with tab5:
 
     if search_term:
         df_show = df_show[
-            df_show['cliente_ida'].str.contains(search_term.upper(), na=False) |
-            df_show['cliente_retorno'].str.contains(search_term.upper(), na=False) |
-            df_show['chofer_ida'].str.contains(search_term.upper(), na=False) |
+            df_show['cliente'].str.contains(search_term.upper(), na=False) |
+            df_show['chofer'].str.contains(search_term.upper(), na=False) |
             df_show['placa'].str.contains(search_term.upper(), na=False) |
             df_show['ruta'].str.contains(search_term.upper(), na=False) |
-            df_show['servicio_ida'].astype(str).str.contains(search_term, na=False)
+            df_show['id_servicio'].astype(str).str.contains(search_term, na=False)
         ]
         
     display_cols = [
-        'servicio_ida', 'fecha_salida', 'semana_label', 'cliente_ida', 'chofer_ida', 'placa', 
-        'ruta', 'tipo_servicio', 'flete_ida', 'gastos_ida', 
-        'servicio_retorno', 'cliente_retorno', 'flete_retorno', 'gastos_retorno', 
-        'flete_total', 'gastos_total', 'margen_calculado'
+        'id_servicio', 'tramo', 'fecha_salida', 'semana_label', 'cliente', 'chofer', 'placa', 
+        'ruta', 'tipo_servicio', 'flete_total', 'gastos_total', 'margen_calculado'
     ]
     
     st.dataframe(
         df_show[display_cols].style.format({
-            'flete_ida': 'S/ {:,.2f}',
-            'gastos_ida': 'S/ {:,.2f}',
-            'flete_retorno': 'S/ {:,.2f}',
-            'gastos_retorno': 'S/ {:,.2f}',
             'flete_total': 'S/ {:,.2f}',
             'gastos_total': 'S/ {:,.2f}',
             'margen_calculado': 'S/ {:,.2f}'
