@@ -207,28 +207,26 @@ def load_sistrans_file(file_source):
     return df_data
 
 # ---------------------------------------------------------
-# File Type Auto-Detector Function (Validates Content, NOT Filename)
+# File Type Auto-Detector Function (Validates Content & Structure)
 # ---------------------------------------------------------
 def detect_excel_file_type(file_source):
     try:
         reset_stream(file_source)
-        df_sample = pd.read_excel(file_source, header=None, nrows=25)
+        df_sample = pd.read_excel(file_source, header=None, nrows=50)
         reset_stream(file_source)
         
-        text_content = " ".join(df_sample.astype(str).values.flatten()).upper()
+        cells = df_sample.fillna('').astype(str).values.flatten()
+        all_text = " ".join([c.strip().upper() for c in cells])
         
-        has_chofer = "CHOFER" in text_content
-        has_cliente = "CLIENTE" in text_content
-        has_producto = "PRODUCTO" in text_content
-        has_gastos = "GASTOS" in text_content
-        has_margen = "MARGEN" in text_content
-        has_retorno = "RETORNO" in text_content
+        has_gastos = "GASTO" in all_text or "GASTOS" in all_text
+        has_margen = "MARGEN" in all_text
+        has_chofer = "CHOFER" in all_text
+        has_producto = "PRODUCTO" in all_text
+        has_oficina = "OFICINA" in all_text
         
-        if (has_chofer or has_cliente or has_producto) and not (has_gastos or has_margen or has_retorno):
-            return 'GENERAL'
-        elif has_gastos or has_margen or has_retorno:
+        if has_gastos or has_margen:
             return 'MARGEN'
-        elif has_chofer or has_cliente:
+        elif has_chofer or has_producto or has_oficina:
             return 'GENERAL'
         else:
             return 'UNKNOWN'
@@ -236,10 +234,11 @@ def detect_excel_file_type(file_source):
         reset_stream(file_source)
         return 'UNKNOWN'
 
-# Automatically discover default local Excel files by absolute script directory
+# Automatically discover default local Excel files with bulletproof fallbacks
 def find_default_files():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     files = [os.path.join(base_dir, f) for f in os.listdir(base_dir) if f.endswith(('.xls', '.xlsx')) and not f.startswith('.')]
+    
     mrg_files = []
     gen_files = []
     for f in files:
@@ -252,9 +251,18 @@ def find_default_files():
     mrg_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
     gen_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
     
-    mrg_default = mrg_files[0] if mrg_files else None
-    gen_default = gen_files[0] if gen_files else None
-    return mrg_default, gen_default
+    if mrg_files and gen_files:
+        return mrg_files[0], gen_files[0]
+        
+    # Smart Fallback by file size if content detection is uncertain
+    if len(files) >= 2:
+        files.sort(key=lambda x: os.path.getsize(x), reverse=True)
+        # Larger file is General list (~68KB), smaller file is Margen report (~37KB)
+        return files[1], files[0]
+    elif len(files) == 1:
+        return files[0], files[0]
+        
+    return None, None
 
 # ---------------------------------------------------------
 # Dynamic Data Loader (Unbundles Each Service Leg by Its Real Departure Date)
@@ -430,7 +438,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# File Resolution Logic
+# File Resolution Logic with Guaranteed Fallbacks
 # ---------------------------------------------------------
 default_mrg_file, default_gen_file = find_default_files()
 
@@ -451,18 +459,37 @@ with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Co
             help="Sube el segundo archivo Excel para realizar el cruce completo."
         )
 
-# Content-based File Assignment
+# Content & Size-based File Assignment
 detected_mrg = None
 detected_gen = None
 uploaded_files = [f for f in [file1, file2] if f is not None]
 
-for uf in uploaded_files:
-    reset_stream(uf)
-    ftype = detect_excel_file_type(uf)
-    if ftype == 'MARGEN':
-        detected_mrg = uf
-    elif ftype == 'GENERAL':
-        detected_gen = uf
+if len(uploaded_files) == 2:
+    t0 = detect_excel_file_type(uploaded_files[0])
+    t1 = detect_excel_file_type(uploaded_files[1])
+    
+    if t0 == 'MARGEN' and t1 == 'GENERAL':
+        detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
+    elif t0 == 'GENERAL' and t1 == 'MARGEN':
+        detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
+    elif t0 == 'MARGEN':
+        detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
+    elif t1 == 'MARGEN':
+        detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
+    else:
+        # Fallback by file size (Margen report ~37KB, General list ~68KB)
+        s0 = getattr(uploaded_files[0], 'size', 0)
+        s1 = getattr(uploaded_files[1], 'size', 0)
+        if s0 <= s1:
+            detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
+        else:
+            detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
+elif len(uploaded_files) == 1:
+    t0 = detect_excel_file_type(uploaded_files[0])
+    if t0 == 'MARGEN':
+        detected_mrg = uploaded_files[0]
+    else:
+        detected_gen = uploaded_files[0]
 
 final_mrg_source = detected_mrg if detected_mrg is not None else default_mrg_file
 final_gen_source = detected_gen if detected_gen is not None else default_gen_file
