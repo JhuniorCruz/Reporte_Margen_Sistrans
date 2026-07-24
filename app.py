@@ -164,27 +164,20 @@ DIAS_ES = {
     'Thursday': 'Jueves', 'Friday': 'Viernes', 'Saturday': 'Sábado', 'Sunday': 'Domingo'
 }
 
-# Helper to reset file buffer stream pointers
-def reset_stream(file_source):
-    if hasattr(file_source, 'seek'):
-        file_source.seek(0)
-
-# Helper to load and parse any Sistrans Excel layout (12-column or 15-column exports)
+# Helper to load and parse any Sistrans Excel layout (Python 3.14 Linux Compatible)
 def load_sistrans_file(file_source):
-    reset_stream(file_source)
     df_raw = pd.read_excel(file_source, header=None)
-    reset_stream(file_source)
     
     # Locate header row containing PLACA or RUTA or GASTOS or CHOFER
     h_idx = 7
     for idx, row in df_raw.iloc[:15].iterrows():
-        row_str = ' '.join(row.fillna('').astype(str).values).upper()
+        row_str = ' '.join([str(val) for val in row.values if pd.notnull(val) and str(val) != 'nan']).upper()
         if 'PLACA' in row_str or 'GASTOS' in row_str or 'CHOFER' in row_str:
             h_idx = idx
             break
             
-    row1 = df_raw.iloc[h_idx].fillna('').astype(str).str.strip()
-    row2 = df_raw.iloc[h_idx+1].fillna('').astype(str).str.strip() if h_idx+1 < len(df_raw) else ['']*len(row1)
+    row1 = [str(v).strip() if pd.notnull(v) and str(v) != 'nan' else '' for v in df_raw.iloc[h_idx].values]
+    row2 = [str(v).strip() if pd.notnull(v) and str(v) != 'nan' else '' for v in df_raw.iloc[h_idx+1].values] if h_idx+1 < len(df_raw) else ['']*len(row1)
     
     col_names = []
     for idx_c, (h1, h2) in enumerate(zip(row1, row2)):
@@ -207,70 +200,12 @@ def load_sistrans_file(file_source):
     return df_data
 
 # ---------------------------------------------------------
-# File Type Auto-Detector Function (Validates Content & Structure)
-# ---------------------------------------------------------
-def detect_excel_file_type(file_source):
-    try:
-        reset_stream(file_source)
-        df_sample = pd.read_excel(file_source, header=None, nrows=50)
-        reset_stream(file_source)
-        
-        cells = df_sample.fillna('').astype(str).values.flatten()
-        all_text = " ".join([c.strip().upper() for c in cells])
-        
-        has_gastos = "GASTO" in all_text or "GASTOS" in all_text
-        has_margen = "MARGEN" in all_text
-        has_chofer = "CHOFER" in all_text
-        has_producto = "PRODUCTO" in all_text
-        has_oficina = "OFICINA" in all_text
-        
-        if has_gastos or has_margen:
-            return 'MARGEN'
-        elif has_chofer or has_producto or has_oficina:
-            return 'GENERAL'
-        else:
-            return 'UNKNOWN'
-    except Exception:
-        reset_stream(file_source)
-        return 'UNKNOWN'
-
-# Automatically discover default local Excel files with bulletproof fallbacks
-def find_default_files():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    files = [os.path.join(base_dir, f) for f in os.listdir(base_dir) if f.endswith(('.xls', '.xlsx')) and not f.startswith('.')]
-    
-    mrg_files = []
-    gen_files = []
-    for f in files:
-        ftype = detect_excel_file_type(f)
-        if ftype == 'MARGEN':
-            mrg_files.append(f)
-        elif ftype == 'GENERAL':
-            gen_files.append(f)
-            
-    mrg_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
-    gen_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
-    
-    if mrg_files and gen_files:
-        return mrg_files[0], gen_files[0]
-        
-    # Smart Fallback by file size if content detection is uncertain
-    if len(files) >= 2:
-        files.sort(key=lambda x: os.path.getsize(x), reverse=True)
-        # Larger file is General list (~68KB), smaller file is Margen report (~37KB)
-        return files[1], files[0]
-    elif len(files) == 1:
-        return files[0], files[0]
-        
-    return None, None
-
-# ---------------------------------------------------------
-# Dynamic Data Loader (Unbundles Each Service Leg by Its Real Departure Date)
+# Dynamic Data Loader (Direct Database Loading)
 # ---------------------------------------------------------
 @st.cache_data
-def process_excel_files(file_mrg_source, file_gen_source):
+def process_excel_files(file_mrg_path, file_gen_path):
     # 1. Load Margen File (Financial base)
-    df_mrg_raw = load_sistrans_file(file_mrg_source)
+    df_mrg_raw = load_sistrans_file(file_mrg_path)
     
     df_mrg = pd.DataFrame()
     for col in df_mrg_raw.columns:
@@ -312,7 +247,7 @@ def process_excel_files(file_mrg_source, file_gen_source):
             df_mrg[col] = 0.0
 
     # 2. Load General File for Client, Driver, and Real Departure Date
-    df_gen_raw = load_sistrans_file(file_gen_source)
+    df_gen_raw = load_sistrans_file(file_gen_path)
     
     df_gen = pd.DataFrame()
     for col in df_gen_raw.columns:
@@ -426,6 +361,19 @@ def process_excel_files(file_mrg_source, file_gen_source):
     return df_services
 
 # ---------------------------------------------------------
+# Absolute Path Resolution to Default Database Files
+# ---------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FILE_MRG = os.path.join(BASE_DIR, "rptlistadoserviciosmargen_nuevo.xls")
+FILE_GEN = os.path.join(BASE_DIR, "rptlistadoservicios_nuevo.xls")
+
+# Process and Load Data
+df_all = process_excel_files(FILE_MRG, FILE_GEN)
+
+min_date = df_all['fecha_salida'].min().date()
+max_date = df_all['fecha_salida'].max().date()
+
+# ---------------------------------------------------------
 # Top Main Header
 # ---------------------------------------------------------
 st.markdown("""
@@ -437,92 +385,22 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# File Resolution Logic with Guaranteed Fallbacks
-# ---------------------------------------------------------
-default_mrg_file, default_gen_file = find_default_files()
-
-with st.expander("📂 **Cargar Archivos de Datos (Validación Automática de Contenido)**", expanded=False):
-    ucol1, ucol2 = st.columns(2)
-    with ucol1:
-        file1 = st.file_uploader(
-            "📄 Subir Archivo 1 (Cualquier Nombre Excel)", 
-            type=["xls", "xlsx"],
-            key="u_file1",
-            help="Sube el archivo Excel. El sistema identificará automáticamente si es el Reporte de Margen o el Listado General."
-        )
-    with ucol2:
-        file2 = st.file_uploader(
-            "📄 Subir Archivo 2 (Cualquier Nombre Excel)", 
-            type=["xls", "xlsx"],
-            key="u_file2",
-            help="Sube el segundo archivo Excel para realizar el cruce completo."
-        )
-
-# Content & Size-based File Assignment
-detected_mrg = None
-detected_gen = None
-uploaded_files = [f for f in [file1, file2] if f is not None]
-
-if len(uploaded_files) == 2:
-    t0 = detect_excel_file_type(uploaded_files[0])
-    t1 = detect_excel_file_type(uploaded_files[1])
-    
-    if t0 == 'MARGEN' and t1 == 'GENERAL':
-        detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
-    elif t0 == 'GENERAL' and t1 == 'MARGEN':
-        detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
-    elif t0 == 'MARGEN':
-        detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
-    elif t1 == 'MARGEN':
-        detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
-    else:
-        # Fallback by file size (Margen report ~37KB, General list ~68KB)
-        s0 = getattr(uploaded_files[0], 'size', 0)
-        s1 = getattr(uploaded_files[1], 'size', 0)
-        if s0 <= s1:
-            detected_mrg, detected_gen = uploaded_files[0], uploaded_files[1]
-        else:
-            detected_mrg, detected_gen = uploaded_files[1], uploaded_files[0]
-elif len(uploaded_files) == 1:
-    t0 = detect_excel_file_type(uploaded_files[0])
-    if t0 == 'MARGEN':
-        detected_mrg = uploaded_files[0]
-    else:
-        detected_gen = uploaded_files[0]
-
-final_mrg_source = detected_mrg if detected_mrg is not None else default_mrg_file
-final_gen_source = detected_gen if detected_gen is not None else default_gen_file
-
-if final_mrg_source is None or final_gen_source is None:
-    st.error("⚠️ No se pudieron encontrar ambos reportes requeridos. Por favor despliega la pestaña de arriba y sube los 2 archivos Excel válidos (Reporte de Margen y Listado General).")
-    st.stop()
-
-# Load Data
-reset_stream(final_mrg_source)
-reset_stream(final_gen_source)
-df_all = process_excel_files(final_mrg_source, final_gen_source)
-
-min_date = df_all['fecha_salida'].min().date()
-max_date = df_all['fecha_salida'].max().date()
-
 # Controls bar
-with st.container():
-    gcol1, gcol2 = st.columns([2, 2])
-    with gcol1:
-        start_date, end_date = st.date_input(
-            "📅 Rango de Fechas Global",
-            value=[min_date, max_date],
-            min_value=min_date,
-            max_value=max_date
-        )
-    with gcol2:
-        flete_source = st.radio(
-            "💵 Criterio de Flete para Clientes:",
-            options=["Flete Liquidado (Reporte Margen)", "Flete Inicial (Listado General)"],
-            horizontal=True,
-            help="El Flete Liquidado muestra el ingreso cobrado real. El Flete Inicial muestra el registro operativo preliminar."
-        )
+gcol1, gcol2 = st.columns([2, 2])
+with gcol1:
+    start_date, end_date = st.date_input(
+        "📅 Rango de Fechas Global",
+        value=[min_date, max_date],
+        min_value=min_date,
+        max_value=max_date
+    )
+with gcol2:
+    flete_source = st.radio(
+        "💵 Criterio de Flete para Clientes:",
+        options=["Flete Liquidado (Reporte Margen)", "Flete Inicial (Listado General)"],
+        horizontal=True,
+        help="El Flete Liquidado muestra el ingreso cobrado real. El Flete Inicial muestra el registro operativo preliminar."
+    )
 
 # Global Filter Mask
 df = df_all[
