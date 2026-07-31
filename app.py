@@ -12,7 +12,7 @@ st.set_page_config(
     page_title="SUDAMERICANA - Dashboard de Margen Operativo",
     page_icon="🚚",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Custom High-End Dashboard Styling
@@ -397,14 +397,27 @@ def get_available_weeks_map():
 weeks_map = get_available_weeks_map()
 week_labels = list(weeks_map.keys())
 
-# Sidebar Data Version Selection
-st.sidebar.markdown("### 📁 Selección de Corte / Semana")
-selected_week_label = st.sidebar.selectbox(
-    "Seleccionar Versión de Datos:",
-    options=week_labels,
-    index=len(week_labels) - 1,
-    help="Permite a la gerencia seleccionar la versión de datos a visualizar."
-)
+# ---------------------------------------------------------
+# Top Main Header
+# ---------------------------------------------------------
+st.markdown("""
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+        <div>
+            <h1 style="font-size: 1.9rem; margin: 0; font-weight: 700; color: #f8fafc;">🚚 SUDAMERICANA - DASHBOARD DE MARGEN OPERATIVO</h1>
+            <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 4px;">Sistema Sistrans | Empresa: <b>Inversiones Comerciales Sudamericana S.R.L.</b></p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+# Controls bar in clean horizontal layout (No sidebar!)
+gcol1, gcol2, gcol3 = st.columns([1.3, 1.5, 2.2])
+with gcol1:
+    selected_week_label = st.selectbox(
+        "📁 Versión / Semana de Corte:",
+        options=week_labels,
+        index=len(week_labels) - 1,
+        help="Permite cambiar entre la versión actual y reportes de semanas anteriores."
+    )
 
 current_mrg_path, current_gen_path = weeks_map[selected_week_label]
 
@@ -422,28 +435,12 @@ if len(week_labels) > 1:
 min_date = df_all['fecha_salida'].min().date()
 max_date = df_all['fecha_salida'].max().date()
 
-# ---------------------------------------------------------
-# Top Main Header
-# ---------------------------------------------------------
-st.markdown(f"""
-    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-        <div>
-            <h1 style="font-size: 1.9rem; margin: 0; font-weight: 700; color: #f8fafc;">🚚 SUDAMERICANA - DASHBOARD DE MARGEN OPERATIVO</h1>
-            <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 4px;">Sistema Sistrans | Empresa: <b>Inversiones Comerciales Sudamericana S.R.L.</b> | <b>Corte: {selected_week_label}</b></p>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
-
-# Controls bar
-gcol1, gcol2 = st.columns([2, 2])
-with gcol1:
-    start_date, end_date = st.date_input(
-        "📅 Rango de Fechas Global",
-        value=[min_date, max_date],
-        min_value=min_date,
-        max_value=max_date
-    )
 with gcol2:
+    start_date, end_date = st.date_input(
+        "📅 Rango de Fechas Global:",
+        value=[min_date, max_date]
+    )
+with gcol3:
     flete_source = st.radio(
         "💵 Criterio de Flete para Clientes:",
         options=["Flete Liquidado (Reporte Margen)", "Flete Inicial (Listado General)"],
@@ -944,27 +941,31 @@ with tab5:
             df_show['id_servicio'].astype(str).str.contains(search_term, na=False)
         ]
         
-    display_cols = [
-        'id_servicio', 'tramo', 'fecha_salida', 'semana_label', 'cliente', 'chofer', 'placa', 
-        'ruta', 'tipo_servicio', 'flete_total', 'gastos_total', 'margen_calculado'
-    ]
+    df_show['fecha_str'] = pd.to_datetime(df_show['fecha_salida']).dt.strftime('%Y-%m-%d').fillna('N/A')
+    cols_tab5 = {
+        'id_servicio': 'ID Servicio',
+        'tramo': 'Tramo',
+        'fecha_str': 'Fecha Salida',
+        'semana_label': 'Corte Semana',
+        'cliente': 'Cliente',
+        'chofer': 'Chofer',
+        'placa': 'Placa',
+        'ruta': 'Ruta',
+        'tipo_servicio': 'Tipo Servicio',
+        'flete_total': 'Flete Total (S/)',
+        'gastos_total': 'Gastos Total (S/)',
+        'margen_calculado': 'Margen Bruto (S/)'
+    }
+    df_tab5_export = df_show[list(cols_tab5.keys())].rename(columns=cols_tab5)
     
     st.dataframe(
-        df_show[display_cols].style.format({
-            'flete_total': 'S/ {:,.2f}',
-            'gastos_total': 'S/ {:,.2f}',
-            'margen_calculado': 'S/ {:,.2f}'
+        df_tab5_export.style.format({
+            'Flete Total (S/)': 'S/ {:,.2f}',
+            'Gastos Total (S/)': 'S/ {:,.2f}',
+            'Margen Bruto (S/)': 'S/ {:,.2f}'
         }),
         use_container_width=True,
-        height=450
-    )
-
-    csv = df_show.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Descargar Registros Filtrados en CSV",
-        data=csv,
-        file_name="reporte_sistrans_filtrado.csv",
-        mime="text/csv"
+        height=480
     )
 
 # ---------------------------------------------------------
@@ -1090,33 +1091,71 @@ with tab6:
         elif audit_filter == "Solo Nuevos Registros":
             df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🟢 Nuevo Registro']
             
-        audit_cols = [
-            'id_servicio', 'cliente', 'ruta', 'placa', 'estado_cambio',
-            'flete_base', 'flete_nuevo', 'diff_flete',
-            'gastos_base', 'gastos_nuevo', 'diff_gastos',
-            'margen_base', 'margen_nuevo', 'diff_margen'
-        ]
+        sub_diff_flete = df_audit_show['diff_flete'].sum()
+        sub_diff_gastos = df_audit_show['diff_gastos'].sum()
+        sub_diff_margen = df_audit_show['diff_margen'].sum()
+
+        color_f = "#10b981" if sub_diff_flete >= 0 else "#f43f5e"
+        color_g = "#f43f5e" if sub_diff_gastos > 0 else "#10b981"
+        color_m = "#10b981" if sub_diff_margen >= 0 else "#f43f5e"
+
+        st.markdown(f"""
+            <div style="background-color: #1e293b; border: 1px solid #334155; padding: 12px 18px; border-radius: 8px; margin-top: 10px; margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="background-color: #3b82f6; color: white; padding: 3px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">SUBTOTALES DE VISTA</span>
+                    <span style="color: #cbd5e1; font-size: 0.95rem;">Filtro: <b style="color: #f8fafc;">{audit_filter}</b> ({len(df_audit_show)} servicios)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 20px;">
+                    <div style="background: #0f172a; padding: 6px 12px; border-radius: 6px; border: 1px solid #334155;">
+                        <span style="color: #94a3b8; font-size: 0.85rem;">Δ Flete: </span>
+                        <b style="color: {color_f}; font-size: 0.95rem;">S/ {sub_diff_flete:+,.2f}</b>
+                    </div>
+                    <div style="background: #0f172a; padding: 6px 12px; border-radius: 6px; border: 1px solid #334155;">
+                        <span style="color: #94a3b8; font-size: 0.85rem;">Δ Gastos: </span>
+                        <b style="color: {color_g}; font-size: 0.95rem;">S/ {sub_diff_gastos:+,.2f}</b>
+                    </div>
+                    <div style="background: #0f172a; padding: 6px 12px; border-radius: 6px; border: 1px solid #334155;">
+                        <span style="color: #94a3b8; font-size: 0.85rem;">Δ Margen: </span>
+                        <b style="color: {color_m}; font-size: 1.05rem;">S/ {sub_diff_margen:+,.2f}</b>
+                    </div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        df_audit_show['fecha_str'] = pd.to_datetime(df_audit_show['fecha_salida']).dt.strftime('%Y-%m-%d').fillna('N/A')
+        audit_cols_map = {
+            'id_servicio': 'ID Servicio',
+            'fecha_str': 'Fecha Salida',
+            'cliente': 'Cliente',
+            'ruta': 'Ruta',
+            'placa': 'Placa',
+            'estado_cambio': 'Estado Auditoría',
+            'flete_base': 'Flete Ant. (S/)',
+            'flete_nuevo': 'Flete Nuevo (S/)',
+            'diff_flete': 'Δ Flete (S/)',
+            'gastos_base': 'Gastos Ant. (S/)',
+            'gastos_nuevo': 'Gastos Nuevo (S/)',
+            'diff_gastos': 'Δ Gastos (S/)',
+            'margen_base': 'Margen Ant. (S/)',
+            'margen_nuevo': 'Margen Nuevo (S/)',
+            'diff_margen': 'Δ Margen (S/)'
+        }
+        
+        df_audit_export = df_audit_show[list(audit_cols_map.keys())].rename(columns=audit_cols_map)
+        df_audit_export['ID Servicio'] = df_audit_export['ID Servicio'].astype(str)
         
         st.dataframe(
-            df_audit_show[audit_cols].style.format({
-                'flete_base': 'S/ {:,.2f}',
-                'flete_nuevo': 'S/ {:,.2f}',
-                'diff_flete': 'S/ {:+,.2f}',
-                'gastos_base': 'S/ {:,.2f}',
-                'gastos_nuevo': 'S/ {:,.2f}',
-                'diff_gastos': 'S/ {:+,.2f}',
-                'margen_base': 'S/ {:,.2f}',
-                'margen_nuevo': 'S/ {:,.2f}',
-                'diff_margen': 'S/ {:+,.2f}'
+            df_audit_export.style.format({
+                'Flete Ant. (S/)': 'S/ {:,.2f}',
+                'Flete Nuevo (S/)': 'S/ {:,.2f}',
+                'Δ Flete (S/)': 'S/ {:+,.2f}',
+                'Gastos Ant. (S/)': 'S/ {:,.2f}',
+                'Gastos Nuevo (S/)': 'S/ {:,.2f}',
+                'Δ Gastos (S/)': 'S/ {:+,.2f}',
+                'Margen Ant. (S/)': 'S/ {:,.2f}',
+                'Margen Nuevo (S/)': 'S/ {:,.2f}',
+                'Δ Margen (S/)': 'S/ {:+,.2f}'
             }),
             use_container_width=True,
-            height=450
-        )
-        
-        csv_audit = df_audit_show[audit_cols].to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Descargar Reporte Completo de Auditoría en CSV",
-            data=csv_audit,
-            file_name="reporte_auditoria_regularizaciones.csv",
-            mime="text/csv"
+            height=500
         )
