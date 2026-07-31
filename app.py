@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import os
+import os, glob
 
 # ---------------------------------------------------------
 # Page Configuration & Custom CSS Theme
@@ -12,7 +12,7 @@ st.set_page_config(
     page_title="SUDAMERICANA - Dashboard de Margen Operativo",
     page_icon="🚚",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Custom High-End Dashboard Styling
@@ -361,14 +361,63 @@ def process_excel_files(file_mrg_path, file_gen_path):
     return df_services
 
 # ---------------------------------------------------------
-# Absolute Path Resolution to Default Database Files
+# Absolute Path Resolution & Multi-Week Dataset Discovery
 # ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FILE_MRG = os.path.join(BASE_DIR, "rptlistadoserviciosmargen_nuevo.xls")
-FILE_GEN = os.path.join(BASE_DIR, "rptlistadoservicios_nuevo.xls")
 
-# Process and Load Data
-df_all = process_excel_files(FILE_MRG, FILE_GEN)
+def get_available_weeks_map():
+    data_dir = os.path.join(BASE_DIR, "data")
+    weeks_map = {}
+    
+    if os.path.exists(data_dir):
+        subdirs = sorted([d for d in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, d))])
+        for sdir in subdirs:
+            folder_path = os.path.join(data_dir, sdir)
+            xls_files = [f for f in os.listdir(folder_path) if f.endswith(('.xls', '.xlsx'))]
+            if len(xls_files) >= 2:
+                # Find margen and general files
+                mrg_f = [f for f in xls_files if 'margen' in f.lower()]
+                gen_f = [f for f in xls_files if 'margen' not in f.lower()]
+                
+                m_path = os.path.join(folder_path, mrg_f[0]) if mrg_f else os.path.join(folder_path, xls_files[0])
+                g_path = os.path.join(folder_path, gen_f[0]) if gen_f else os.path.join(folder_path, xls_files[-1])
+                
+                label = sdir.replace('_', ' ').title()
+                weeks_map[label] = (m_path, g_path)
+                
+    # Fallback to root files if data/ is empty
+    if not weeks_map:
+        root_mrg = os.path.join(BASE_DIR, "rptlistadoserviciosmargen_nuevo.xls")
+        root_gen = os.path.join(BASE_DIR, "rptlistadoservicios_nuevo.xls")
+        if os.path.exists(root_mrg) and os.path.exists(root_gen):
+            weeks_map["Base Inicial (Corte Semana 30)"] = (root_mrg, root_gen)
+            
+    return weeks_map
+
+weeks_map = get_available_weeks_map()
+week_labels = list(weeks_map.keys())
+
+# Sidebar Data Version Selection
+st.sidebar.markdown("### 📁 Selección de Corte / Semana")
+selected_week_label = st.sidebar.selectbox(
+    "Seleccionar Versión de Datos:",
+    options=week_labels,
+    index=len(week_labels) - 1,
+    help="Permite a la gerencia seleccionar la versión de datos a visualizar."
+)
+
+current_mrg_path, current_gen_path = weeks_map[selected_week_label]
+
+# Process Current Selected Dataset
+df_all = process_excel_files(current_mrg_path, current_gen_path)
+
+# Determine Baseline Dataset for Comparison if previous week exists
+baseline_mrg_path, baseline_gen_path = None, None
+if len(week_labels) > 1:
+    curr_idx = week_labels.index(selected_week_label)
+    prev_idx = max(0, curr_idx - 1)
+    if prev_idx != curr_idx:
+        baseline_mrg_path, baseline_gen_path = weeks_map[week_labels[prev_idx]]
 
 min_date = df_all['fecha_salida'].min().date()
 max_date = df_all['fecha_salida'].max().date()
@@ -376,11 +425,11 @@ max_date = df_all['fecha_salida'].max().date()
 # ---------------------------------------------------------
 # Top Main Header
 # ---------------------------------------------------------
-st.markdown("""
+st.markdown(f"""
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
         <div>
             <h1 style="font-size: 1.9rem; margin: 0; font-weight: 700; color: #f8fafc;">🚚 SUDAMERICANA - DASHBOARD DE MARGEN OPERATIVO</h1>
-            <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 4px;">Sistema Sistrans | Empresa: <b>Inversiones Comerciales Sudamericana S.R.L.</b></p>
+            <p style="color: #94a3b8; font-size: 0.9rem; margin-top: 4px;">Sistema Sistrans | Empresa: <b>Inversiones Comerciales Sudamericana S.R.L.</b> | <b>Corte: {selected_week_label}</b></p>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -469,12 +518,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ---------------------------------------------------------
 # Interactive Contextual Tabs
 # ---------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Balance Mensual y Semanal", 
     "👥 Top de Clientes", 
     "🚛 Top de Placas (Vehículos)", 
     "🗺️ Rutas y Tipos de Servicio",
-    "📋 Registro Detallado"
+    "📋 Registro Detallado",
+    "🔄 Auditoría de Regularizaciones"
 ])
 
 # ---------------------------------------------------------
@@ -483,7 +533,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     col_m1, col_m2 = st.columns(2)
     
-    # --- GRÁFICO 1: BALANCE MENSUAL CON SU PROPIO FILTRO INLINE ---
     with col_m1:
         st.markdown('<div class="filter-bar-title">📅 1. Balance Mensual de Ingresos vs Gastos</div>', unsafe_allow_html=True)
         
@@ -535,7 +584,6 @@ with tab1:
         )
         st.plotly_chart(fig_mes, use_container_width=True)
 
-    # --- GRÁFICO 2: BALANCE SEMANAL CON SU PROPIO FILTRO INLINE ---
     with col_m2:
         st.markdown('<div class="filter-bar-title">📆 2. Evolución Semanal de Servicios & Margen</div>', unsafe_allow_html=True)
         
@@ -553,7 +601,6 @@ with tab1:
 
         fig_sem = go.Figure()
         
-        # Bar trace for services
         fig_sem.add_trace(go.Bar(
             x=df_sem['semana_label'], 
             y=df_sem['Servicios'], 
@@ -565,7 +612,6 @@ with tab1:
             hovertemplate="<b>%{x}</b><br>📦 Servicios Realizados: <b>%{y} servicios</b><br>💰 Flete Total: <b>S/ %{customdata[0]:,.2f}</b><br>📈 Margen Bruto: <b>S/ %{customdata[1]:,.2f}</b><extra></extra>"
         ))
         
-        # Line trace for Margen Bruto
         fig_sem.add_trace(go.Scatter(
             x=df_sem['semana_label'], 
             y=df_sem['Margen_Bruto'], 
@@ -773,7 +819,6 @@ with tab3:
 with tab4:
     col_r1, col_r2 = st.columns(2)
 
-    # --- RUTAS DE TRANSPORTE ---
     with col_r1:
         st.markdown('<div class="filter-bar-title">📍 1. Análisis por Rutas de Transporte</div>', unsafe_allow_html=True)
         rutas_opt = sorted(df['ruta'].dropna().unique())
@@ -800,7 +845,6 @@ with tab4:
         fig_rutas.update_layout(template='plotly_dark', height=340, margin=dict(l=10, r=10, t=20, b=10), yaxis=dict(autorange="reversed"))
         st.plotly_chart(fig_rutas, use_container_width=True)
 
-        # Chips de Resumen Dinámico para Rutas
         r_flete = df_r_filtered['flete_total'].sum()
         r_gastos = df_r_filtered['gastos_total'].sum()
         r_margen = df_r_filtered['margen_calculado'].sum()
@@ -816,7 +860,6 @@ with tab4:
             </div>
         """, unsafe_allow_html=True)
 
-    # --- TIPO DE SERVICIO ---
     with col_r2:
         st.markdown('<div class="filter-bar-title">📦 2. Análisis por Tipo de Servicio</div>', unsafe_allow_html=True)
         tipos_opt = sorted(df['tipo_servicio'].dropna().unique())
@@ -843,7 +886,6 @@ with tab4:
         fig_tipos.update_layout(template='plotly_dark', height=340, margin=dict(l=10, r=10, t=20, b=10), legend=dict(title=""))
         st.plotly_chart(fig_tipos, use_container_width=True)
 
-        # CHIPS DINÁMICOS DE RESUMEN
         t_flete = df_t_filtered['flete_total'].sum()
         t_gastos = df_t_filtered['gastos_total'].sum()
         t_margen = df_t_filtered['margen_calculado'].sum()
@@ -917,7 +959,6 @@ with tab5:
         height=450
     )
 
-    # Export CSV Button
     csv = df_show.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Descargar Registros Filtrados en CSV",
@@ -925,3 +966,157 @@ with tab5:
         file_name="reporte_sistrans_filtrado.csv",
         mime="text/csv"
     )
+
+# ---------------------------------------------------------
+# TAB 6: Auditoría y Comparativo de Regularizaciones
+# ---------------------------------------------------------
+with tab6:
+    st.markdown('<div class="filter-bar-title">🔄 Auditoría de Regularizaciones y Ajustes de Montos</div>', unsafe_allow_html=True)
+    
+    if baseline_mrg_path is None or baseline_gen_path is None:
+        st.info("ℹ️ Para activar la auditoría comparativa, añade una segunda carpeta de semana en `data/` (por ejemplo `data/semana_31/`). El sistema comparará automáticamente la versión nueva contra la anterior.")
+        
+        # Display Baseline Audit Summary
+        st.markdown("#### 📌 Resumen General del Corte Actual")
+        st.markdown(f"""
+            - **Corte Activo**: `{selected_week_label}`
+            - **Servicios Evaluados**: `{len(df_all)} servicios`
+            - **Facturación Total**: `S/ {df_all['flete_total'].sum():,.2f}`
+            - **Gastos Operativos**: `S/ {df_all['gastos_total'].sum():,.2f}`
+            - **Margen Bruto**: `S/ {df_all['margen_calculado'].sum():,.2f}`
+        """)
+    else:
+        # Load Baseline Dataset
+        df_base_all = process_excel_files(baseline_mrg_path, baseline_gen_path)
+        
+        # Merge datasets to detect variations
+        merged_audit = pd.merge(
+            df_all[['id_servicio', 'tramo', 'fecha_salida', 'cliente', 'ruta', 'placa', 'flete_total', 'gastos_total', 'margen_calculado']],
+            df_base_all[['id_servicio', 'flete_total', 'gastos_total', 'margen_calculado']],
+            on='id_servicio', how='outer', suffixes=('_nuevo', '_base')
+        )
+        
+        merged_audit['flete_base'] = merged_audit['flete_total_base'].fillna(0)
+        merged_audit['flete_nuevo'] = merged_audit['flete_total_nuevo'].fillna(0)
+        merged_audit['diff_flete'] = merged_audit['flete_nuevo'] - merged_audit['flete_base']
+        
+        merged_audit['gastos_base'] = merged_audit['gastos_total_base'].fillna(0)
+        merged_audit['gastos_nuevo'] = merged_audit['gastos_total_nuevo'].fillna(0)
+        merged_audit['diff_gastos'] = merged_audit['gastos_nuevo'] - merged_audit['gastos_base']
+        
+        merged_audit['margen_base'] = merged_audit['margen_calculado_base'].fillna(0)
+        merged_audit['margen_nuevo'] = merged_audit['margen_calculado_nuevo'].fillna(0)
+        merged_audit['diff_margen'] = merged_audit['margen_nuevo'] - merged_audit['margen_base']
+        
+        def classify_status(r):
+            if pd.isnull(r['flete_total_base']):
+                return '🟢 Nuevo Registro'
+            elif pd.isnull(r['flete_total_nuevo']):
+                return '🔴 Eliminado / Anulado'
+            elif abs(r['diff_flete']) > 0.01 or abs(r['diff_gastos']) > 0.01:
+                return '🟡 Modificado / Ajustado'
+            else:
+                return '⚪ Sin Cambios'
+                
+        merged_audit['estado_cambio'] = merged_audit.apply(classify_status, axis=1)
+
+        # Audit Executive Cards
+        ak1, ak2, ak3, ak4, ak5 = st.columns(5)
+        
+        delta_flete = merged_audit['diff_flete'].sum()
+        delta_gastos = merged_audit['diff_gastos'].sum()
+        delta_margen = merged_audit['diff_margen'].sum()
+        n_mod = (merged_audit['estado_cambio'] == '🟡 Modificado / Ajustado').sum()
+        n_new = (merged_audit['estado_cambio'] == '🟢 Nuevo Registro').sum()
+
+        with ak1:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">💰 Δ Facturación (Flete)</div>
+                    <div class="metric-value" style="color: {'#10b981' if delta_flete >= 0 else '#f43f5e'};">S/ {delta_flete:+,.2f}</div>
+                    <div class="metric-sub">Variación en Flete Total</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+        with ak2:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">💸 Δ Gastos Operativos</div>
+                    <div class="metric-value" style="color: {'#f43f5e' if delta_gastos > 0 else '#10b981'};">S/ {delta_gastos:+,.2f}</div>
+                    <div class="metric-sub">Variación en Costos</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with ak3:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">📈 Δ Margen Bruto</div>
+                    <div class="metric-value" style="color: {'#10b981' if delta_margen >= 0 else '#f43f5e'};">S/ {delta_margen:+,.2f}</div>
+                    <div class="metric-sub">Impacto Neto en Soles</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with ak4:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">🟡 Modificados</div>
+                    <div class="metric-value" style="color: #f59e0b;">{n_mod}</div>
+                    <div class="metric-sub">Servicios Ajustados</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with ak5:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">🟢 Nuevos Servicios</div>
+                    <div class="metric-value" style="color: #10b981;">{n_new}</div>
+                    <div class="metric-sub">Incorporados</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        
+        st.markdown("#### 📋 Matriz Detallada de Auditoría por Servicio")
+        
+        audit_filter = st.radio(
+            "🔍 Filtrar vista de auditoría:",
+            options=["Todos", "Solo Modificados / Ajustados", "Solo Nuevos Registros"],
+            horizontal=True
+        )
+        
+        df_audit_show = merged_audit.copy()
+        if audit_filter == "Solo Modificados / Ajustados":
+            df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🟡 Modificado / Ajustado']
+        elif audit_filter == "Solo Nuevos Registros":
+            df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🟢 Nuevo Registro']
+            
+        audit_cols = [
+            'id_servicio', 'cliente', 'ruta', 'placa', 'estado_cambio',
+            'flete_base', 'flete_nuevo', 'diff_flete',
+            'gastos_base', 'gastos_nuevo', 'diff_gastos',
+            'margen_base', 'margen_nuevo', 'diff_margen'
+        ]
+        
+        st.dataframe(
+            df_audit_show[audit_cols].style.format({
+                'flete_base': 'S/ {:,.2f}',
+                'flete_nuevo': 'S/ {:,.2f}',
+                'diff_flete': 'S/ {:+,.2f}',
+                'gastos_base': 'S/ {:,.2f}',
+                'gastos_nuevo': 'S/ {:,.2f}',
+                'diff_gastos': 'S/ {:+,.2f}',
+                'margen_base': 'S/ {:,.2f}',
+                'margen_nuevo': 'S/ {:,.2f}',
+                'diff_margen': 'S/ {:+,.2f}'
+            }),
+            use_container_width=True,
+            height=450
+        )
+        
+        csv_audit = df_audit_show[audit_cols].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar Reporte Completo de Auditoría en CSV",
+            data=csv_audit,
+            file_name="reporte_auditoria_regularizaciones.csv",
+            mime="text/csv"
+        )
