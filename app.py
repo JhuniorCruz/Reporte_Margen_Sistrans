@@ -426,11 +426,6 @@ df_all = process_excel_files(current_mrg_path, current_gen_path)
 
 # Determine Baseline Dataset for Comparison if previous week exists
 baseline_mrg_path, baseline_gen_path = None, None
-if len(week_labels) > 1:
-    curr_idx = week_labels.index(selected_week_label)
-    prev_idx = max(0, curr_idx - 1)
-    if prev_idx != curr_idx:
-        baseline_mrg_path, baseline_gen_path = weeks_map[week_labels[prev_idx]]
 
 min_date = df_all['fecha_salida'].min().date()
 max_date = df_all['fecha_salida'].max().date()
@@ -974,8 +969,27 @@ with tab5:
 with tab6:
     st.markdown('<div class="filter-bar-title">🔄 Auditoría de Regularizaciones y Ajustes de Montos</div>', unsafe_allow_html=True)
     
+    baseline_mrg_path, baseline_gen_path = None, None
+    base_week_label = ""
+    if len(week_labels) > 1:
+        baseline_mode = st.radio(
+            "🆚 Comparar semana actual contra:",
+            options=["Versión Anterior (Inmediata)", "Primera Versión Base (Origen)"],
+            horizontal=True
+        )
+        
+        curr_idx = week_labels.index(selected_week_label)
+        if baseline_mode == "Primera Versión Base (Origen)":
+            base_idx = 0
+        else:
+            base_idx = max(0, curr_idx - 1)
+            
+        if base_idx != curr_idx:
+            base_week_label = week_labels[base_idx]
+            baseline_mrg_path, baseline_gen_path = weeks_map[base_week_label]
+            
     if baseline_mrg_path is None or baseline_gen_path is None:
-        st.info("ℹ️ Para activar la auditoría comparativa, añade una segunda carpeta de semana en `data/` (por ejemplo `data/semana_31/`). El sistema comparará automáticamente la versión nueva contra la anterior.")
+        st.info("ℹ️ Para activar la auditoría comparativa, añade más semanas en `data/` o selecciona una semana que tenga un historial previo.")
         
         # Display Baseline Audit Summary
         st.markdown("#### 📌 Resumen General del Corte Actual")
@@ -1104,6 +1118,7 @@ with tab6:
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="background-color: #3b82f6; color: white; padding: 3px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">SUBTOTALES DE VISTA</span>
                     <span style="color: #cbd5e1; font-size: 0.95rem;">Filtro: <b style="color: #f8fafc;">{audit_filter}</b> ({len(df_audit_show)} servicios)</span>
+                    <span style="color: #64748b; font-size: 0.85rem; margin-left: 10px;">(Vs {base_week_label})</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 20px;">
                     <div style="background: #0f172a; padding: 6px 12px; border-radius: 6px; border: 1px solid #334155;">
