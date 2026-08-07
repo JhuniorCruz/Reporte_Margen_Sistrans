@@ -1004,6 +1004,16 @@ with tab6:
         # Load Baseline Dataset
         df_base_all = process_excel_files(baseline_mrg_path, baseline_gen_path)
         
+        is_origen_mode = False
+        ids_semana_anterior = set()
+        if len(week_labels) > 1:
+            curr_idx = week_labels.index(selected_week_label)
+            if baseline_mode == "Primera Versión Base (Origen)" and curr_idx > 0:
+                is_origen_mode = True
+                prev_mrg, prev_gen = weeks_map[week_labels[curr_idx - 1]]
+                df_prev = process_excel_files(prev_mrg, prev_gen)
+                ids_semana_anterior = set(df_prev['id_servicio'])
+        
         # Merge datasets to detect variations
         merged_audit = pd.merge(
             df_all[['id_servicio', 'tramo', 'fecha_salida', 'cliente', 'ruta', 'placa', 'flete_total', 'gastos_total', 'margen_calculado']],
@@ -1025,7 +1035,9 @@ with tab6:
         
         def classify_status(r):
             if pd.isnull(r['flete_total_base']):
-                return '🟢 Nuevo Registro'
+                if is_origen_mode and r['id_servicio'] in ids_semana_anterior:
+                    return '🔵 Nuevo Intermedio (Arrastrado)'
+                return '🟢 Nuevo (De esta semana)'
             elif pd.isnull(r['flete_total_nuevo']):
                 return '🔴 Eliminado / Anulado'
             elif abs(r['diff_flete']) > 0.01 or abs(r['diff_gastos']) > 0.01:
@@ -1042,7 +1054,9 @@ with tab6:
         delta_gastos = merged_audit['diff_gastos'].sum()
         delta_margen = merged_audit['diff_margen'].sum()
         n_mod = (merged_audit['estado_cambio'] == '🟡 Modificado / Ajustado').sum()
-        n_new = (merged_audit['estado_cambio'] == '🟢 Nuevo Registro').sum()
+        n_new_puro = (merged_audit['estado_cambio'] == '🟢 Nuevo (De esta semana)').sum()
+        n_new_inter = (merged_audit['estado_cambio'] == '🔵 Nuevo Intermedio (Arrastrado)').sum()
+        n_new = n_new_puro + n_new_inter
 
         with ak1:
             st.markdown(f"""
@@ -1081,11 +1095,14 @@ with tab6:
             """, unsafe_allow_html=True)
 
         with ak5:
+            sub_text = "Incorporados"
+            if is_origen_mode:
+                sub_text = f"<span style='color:#10b981;'>{n_new_puro} de esta sem</span> | <span style='color:#3b82f6;'>{n_new_inter} arrastrados</span>"
             st.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-title">🟢 Nuevos Servicios</div>
                     <div class="metric-value" style="color: #10b981;">{n_new}</div>
-                    <div class="metric-sub">Incorporados</div>
+                    <div class="metric-sub">{sub_text}</div>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -1095,15 +1112,17 @@ with tab6:
         
         audit_filter = st.radio(
             "🔍 Filtrar vista de auditoría:",
-            options=["Todos", "Solo Modificados / Ajustados", "Solo Nuevos Registros"],
+            options=["Todos", "Solo Modificados / Ajustados", "Nuevos (De esta semana)", "Nuevos Intermedios (Arrastrados)"],
             horizontal=True
         )
         
         df_audit_show = merged_audit.copy()
         if audit_filter == "Solo Modificados / Ajustados":
             df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🟡 Modificado / Ajustado']
-        elif audit_filter == "Solo Nuevos Registros":
-            df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🟢 Nuevo Registro']
+        elif audit_filter == "Nuevos (De esta semana)":
+            df_audit_show = df_audit_show[df_audit_show['estado_cambio'].isin(['🟢 Nuevo (De esta semana)', '🟢 Nuevo Registro'])]
+        elif audit_filter == "Nuevos Intermedios (Arrastrados)":
+            df_audit_show = df_audit_show[df_audit_show['estado_cambio'] == '🔵 Nuevo Intermedio (Arrastrado)']
             
         sub_diff_flete = df_audit_show['diff_flete'].sum()
         sub_diff_gastos = df_audit_show['diff_gastos'].sum()
@@ -1174,3 +1193,47 @@ with tab6:
             use_container_width=True,
             height=500
         )
+        
+        st.markdown("---")
+        st.markdown("#### 🔎 Rastreador Forense de Servicios")
+        st.markdown("Revisa el historial de cambios de un servicio específico a lo largo de todas las semanas almacenadas.")
+        
+        forensic_id = st.text_input("Ingrese ID de Servicio (Ej: 8500):")
+        if forensic_id:
+            try:
+                fid = int(forensic_id.strip())
+                historial = []
+                for w_label in week_labels:
+                    wm_mrg, wm_gen = weeks_map[w_label]
+                    df_w = process_excel_files(wm_mrg, wm_gen)
+                    servicio_data = df_w[df_w['id_servicio'] == fid]
+                    
+                    if not servicio_data.empty:
+                        row = servicio_data.iloc[0]
+                        historial.append({
+                            'Semana': w_label,
+                            'Estado': '✔️ Registrado',
+                            'Flete': row['flete_total'],
+                            'Gastos': row['gastos_total'],
+                            'Margen': row['margen_calculado']
+                        })
+                    else:
+                        historial.append({
+                            'Semana': w_label,
+                            'Estado': '❌ No existía',
+                            'Flete': 0,
+                            'Gastos': 0,
+                            'Margen': 0
+                        })
+                
+                if not any(h['Estado'] == '✔️ Registrado' for h in historial):
+                    st.warning(f"⚠️ El servicio con ID {fid} no se encontró en ninguna semana histórica.")
+                else:
+                    df_hist = pd.DataFrame(historial)
+                    st.dataframe(
+                        df_hist.style.applymap(lambda x: 'color: #f43f5e' if '❌' in str(x) else 'color: #10b981', subset=['Estado'])
+                                     .format({'Flete': 'S/ {:,.2f}', 'Gastos': 'S/ {:,.2f}', 'Margen': 'S/ {:,.2f}'}),
+                        use_container_width=True
+                    )
+            except ValueError:
+                st.error("Por favor, ingrese un ID numérico válido.")
